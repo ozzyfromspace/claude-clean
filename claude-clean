@@ -42,7 +42,7 @@ by --kill even when they are stale. Entries for dead PIDs are pruned each run.
 Examples:
   claude-clean                             # list for current user
   claude-clean --kill                      # kill stale for current user
-  claude-clean --profile=further           # list for further
+  claude-clean --profile=otheruser         # list for another local user
   claude-clean --profile=all --kill        # kill stale everywhere
   claude-clean --older-than=2h             # tighten threshold
   claude-clean --protect                   # protect THIS session (run from inside claude)
