@@ -46,6 +46,16 @@ claude-clean --help
 
 Requires macOS. iTerm integration is a best-effort enrichment — the tool works fine in Terminal.app, just without the TITLE column populated.
 
+## Tests
+
+Zero-dependency bash tests. From the repo root:
+
+```bash
+./tests/run.sh
+```
+
+Each test runs in an isolated `$HOME` temp dir and covers CLI validation, duration parsing, symlink/permission hardening, and the protect-list lifecycle.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
