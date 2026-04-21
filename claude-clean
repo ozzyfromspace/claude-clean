@@ -34,6 +34,7 @@ Options:
                             the claude session you're currently inside.
   --unprotect[=PID]         Remove protection. With no PID, unprotects current.
   --list-protected          Show protected PIDs.
+  --where                   Print install location and protect-list paths.
   -h, --help                Show this help
 
 Protected PIDs are stored in $PROTECT_FILE and are skipped
@@ -95,6 +96,7 @@ while [ $# -gt 0 ]; do
     --unprotect)          mode="unprotect"; target="." ;;
     --unprotect=*)        mode="unprotect"; target="${1#--unprotect=}" ;;
     --list-protected)     mode="list-protected" ;;
+    --where)              mode="where" ;;
     -h|--help)            usage; exit 0 ;;
     *) echo "claude-clean: unknown option: $1" >&2; echo "Run 'claude-clean --help' for usage." >&2; exit 2 ;;
   esac
@@ -146,6 +148,22 @@ ancestors_list() {
 
 is_ancestor() {
   case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# Return an absolute path to this script. Handles both direct-path invocation
+# ($0 contains a slash → resolve relative to cwd) and PATH-lookup invocation
+# ($0 is just the basename → ask `command -v`).
+resolve_self() {
+  local s="$0" d
+  case "$s" in
+    */*)
+      d=$(cd "$(dirname "$s")" 2>/dev/null && pwd)
+      if [ -n "$d" ]; then echo "$d/$(basename "$s")"; else echo "$s"; fi
+      ;;
+    *)
+      command -v "$s" 2>/dev/null || echo "$s"
+      ;;
+  esac
 }
 
 ensure_protect_file() {
@@ -315,6 +333,14 @@ case "$mode" in
     fi
     echo "Protected claude PIDs:"
     cat "$PROTECT_FILE"
+    exit 0
+    ;;
+  where)
+    # Deliberately stable, one-key-per-line format so it's easy to parse:
+    #   rm -rf $(claude-clean --where | awk '{print $2}')
+    printf "binary:       %s\n" "$(resolve_self)"
+    printf "protect-list: %s\n" "$PROTECT_FILE"
+    printf "protect-dir:  %s\n" "$PROTECT_DIR"
     exit 0
     ;;
 esac

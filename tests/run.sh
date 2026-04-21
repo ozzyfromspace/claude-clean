@@ -220,6 +220,15 @@ t_no_injection_via_unknown_flag() {
     || { echo "INJECTION: $sentinel was created via unknown-flag echo"; return 1; }
 }
 
+t_where_prints_expected_keys() {
+  local out; out=$("$SCRIPT" --where 2>&1) || { echo "where exited nonzero: $out"; return 1; }
+  contains "binary:" "$out"       || { echo "missing binary: key"; return 1; }
+  contains "protect-list:" "$out" || { echo "missing protect-list: key"; return 1; }
+  contains "protect-dir:" "$out"  || { echo "missing protect-dir: key"; return 1; }
+  # protect-list path should land inside the (temp) $HOME
+  contains "$HOME" "$out" || { echo "paths not under \$HOME: $out"; return 1; }
+}
+
 t_round_trip_protect_list_unprotect() {
   # End-to-end test of the primary flow against a mock `claude` binary:
   # symlink /bin/sleep under the name 'claude' and invoke via PATH so that
@@ -302,6 +311,7 @@ run_test "symlinked protect file refused, target untouched"   t_symlink_protect_
 run_test "protect dir=700 / file=600 perms enforced"          t_protect_file_perms_are_strict
 run_test "prune drops stale + garbage entries from file"      t_prune_drops_stale_and_garbage_entries
 run_test "default list shows expected column headers"         t_list_default_shows_column_headers
+run_test "--where prints binary, protect-list, protect-dir"   t_where_prints_expected_keys
 run_test "round-trip: protect → list → reprotect → unprotect" t_round_trip_protect_list_unprotect
 run_test "sanitize strips ESC/BEL control bytes"              t_sanitize_strips_control_bytes
 run_test "no injection: \$() in --older-than"                 t_no_injection_via_duration

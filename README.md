@@ -36,10 +36,26 @@ sudo chmod 0755 /usr/local/bin/claude-clean
 
 ### Uninstall
 
+See the exact paths on your system with `claude-clean --where`, then remove:
+
 ```bash
-rm ~/.local/bin/claude-clean          # user-local
-sudo rm /usr/local/bin/claude-clean    # system-wide
-rm -rf ~/.claude-clean                 # also remove the protect list
+$ claude-clean --where
+binary:       /Users/alice/.local/bin/claude-clean
+protect-list: /Users/alice/.claude-clean/protected
+protect-dir:  /Users/alice/.claude-clean
+```
+
+```bash
+rm "$(claude-clean --where | awk '/^binary:/ {print $2}')"
+rm -rf "$(claude-clean --where | awk '/^protect-dir:/ {print $2}')"
+```
+
+Or remove them by hand:
+
+```bash
+rm ~/.local/bin/claude-clean          # user-local install
+sudo rm /usr/local/bin/claude-clean   # system-wide install
+rm -rf ~/.claude-clean                # protect list
 ```
 
 ## Privileges
