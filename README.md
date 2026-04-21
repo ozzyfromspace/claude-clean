@@ -39,9 +39,9 @@ sudo chmod 0755 /usr/local/bin/claude-clean
 Run `claude-clean --where` first to see the paths on your system. It prints three lines like:
 
 ```
-binary:       /Users/you/.local/bin/claude-clean
-protect-list: /Users/you/.claude-clean/protected
-protect-dir:  /Users/you/.claude-clean
+binary:       /Users/<you>/.local/bin/claude-clean
+protect-list: /Users/<you>/.claude-clean/protected
+protect-dir:  /Users/<you>/.claude-clean
 ```
 
 (The block above is **example output**, not commands — don't paste it.)
