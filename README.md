@@ -50,8 +50,17 @@ Then remove them in one of these ways:
 
 **Scripted (parses `--where` output):**
 
+If you used the user-local install (Option A):
+
 ```bash
 rm "$(claude-clean --where | awk '/^binary:/ {print $2}')"
+rm -rf "$(claude-clean --where | awk '/^protect-dir:/ {print $2}')"
+```
+
+If you used the system-wide install (Option B), the binary is root-owned, so prefix the first line with `sudo`:
+
+```bash
+sudo rm "$(claude-clean --where | awk '/^binary:/ {print $2}')"
 rm -rf "$(claude-clean --where | awk '/^protect-dir:/ {print $2}')"
 ```
 
