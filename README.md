@@ -36,47 +36,13 @@ sudo chmod 0755 /usr/local/bin/claude-clean
 
 ### Uninstall
 
-Run `claude-clean --where` first to see the paths on your system. It prints three lines like:
-
-```
-binary:       /Users/<you>/.local/bin/claude-clean
-protect-list: /Users/<you>/.claude-clean/protected
-protect-dir:  /Users/<you>/.claude-clean
-```
-
-(The block above is **example output**, not commands — don't paste it.)
-
-Then remove them in one of these ways:
-
-**Scripted (parses `--where` output):**
-
-Capture the paths first — once the binary is deleted, a second `claude-clean --where` call won't work:
-
 ```bash
-info=$(claude-clean --where)
-bin=$(echo "$info" | awk '/^binary:/ {print $2}')
-dir=$(echo "$info" | awk '/^protect-dir:/ {print $2}')
+rm ~/.local/bin/claude-clean          # if you used Option A (user-local)
+sudo rm /usr/local/bin/claude-clean   # if you used Option B (system-wide)
+rm -rf ~/.claude-clean                # protect list (always)
 ```
 
-Then remove. For a **user-local (Option A)** install:
-
-```bash
-rm "$bin" && rm -rf "$dir"
-```
-
-For a **system-wide (Option B)** install the binary is root-owned, so:
-
-```bash
-sudo rm "$bin" && rm -rf "$dir"
-```
-
-**By hand:**
-
-```bash
-rm ~/.local/bin/claude-clean          # user-local install
-sudo rm /usr/local/bin/claude-clean   # system-wide install
-rm -rf ~/.claude-clean                # protect list
-```
+Run only the binary line that matches how you installed. The third line removes your protect list and is always safe to run.
 
 ## Privileges
 
