@@ -178,6 +178,48 @@ t_protect_non_claude_pid_rejected() {
     || { echo "expected rejection but got: $out"; return 1; }
 }
 
+# ---- Injection-resistance tests ----
+#
+# Each one passes a command-substitution payload through a tainted input and
+# asserts a sentinel file was NOT created. If the payload fires, the file
+# would appear; absence proves the validator held.
+
+t_no_injection_via_duration() {
+  local sentinel="$HOME/INJECTED_VIA_DURATION"
+  "$SCRIPT" --older-than='$(touch '"$sentinel"')m' >/dev/null 2>&1 || true
+  [ ! -e "$sentinel" ] \
+    || { echo "INJECTION: $sentinel was created via --older-than"; return 1; }
+}
+
+t_no_injection_via_duration_backticks() {
+  local sentinel="$HOME/INJECTED_VIA_BACKTICKS"
+  "$SCRIPT" --older-than='`touch '"$sentinel"'`m' >/dev/null 2>&1 || true
+  [ ! -e "$sentinel" ] \
+    || { echo "INJECTION: $sentinel was created via backticks in --older-than"; return 1; }
+}
+
+t_no_injection_via_profile() {
+  local sentinel="$HOME/INJECTED_VIA_PROFILE"
+  "$SCRIPT" --profile='$(touch '"$sentinel"')' >/dev/null 2>&1 || true
+  [ ! -e "$sentinel" ] \
+    || { echo "INJECTION: $sentinel was created via --profile"; return 1; }
+}
+
+t_no_injection_via_protect() {
+  local sentinel="$HOME/INJECTED_VIA_PROTECT"
+  "$SCRIPT" --protect='123$(touch '"$sentinel"')' >/dev/null 2>&1 || true
+  [ ! -e "$sentinel" ] \
+    || { echo "INJECTION: $sentinel was created via --protect"; return 1; }
+}
+
+t_no_injection_via_unknown_flag() {
+  # Unknown flags get echoed back in the error; ensure arg isn't evaluated.
+  local sentinel="$HOME/INJECTED_VIA_FLAG"
+  "$SCRIPT" '--bogus=$(touch '"$sentinel"')' >/dev/null 2>&1 || true
+  [ ! -e "$sentinel" ] \
+    || { echo "INJECTION: $sentinel was created via unknown-flag echo"; return 1; }
+}
+
 t_sanitize_strips_control_bytes() {
   # Exercise the sanitize logic via tr directly with the same arguments the
   # script uses. This guards against someone loosening the filter.
@@ -219,6 +261,11 @@ run_test "protect dir=700 / file=600 perms enforced"          t_protect_file_per
 run_test "prune drops stale + garbage entries from file"      t_prune_drops_stale_and_garbage_entries
 run_test "default list shows expected column headers"         t_list_default_shows_column_headers
 run_test "sanitize strips ESC/BEL control bytes"              t_sanitize_strips_control_bytes
+run_test "no injection: \$() in --older-than"                 t_no_injection_via_duration
+run_test "no injection: backticks in --older-than"            t_no_injection_via_duration_backticks
+run_test "no injection: \$() in --profile"                    t_no_injection_via_profile
+run_test "no injection: \$() in --protect"                    t_no_injection_via_protect
+run_test "no injection: \$() in unknown-flag echo"            t_no_injection_via_unknown_flag
 
 echo
 echo "Ran $TESTS_RUN tests; $TESTS_FAILED failed."
