@@ -6,7 +6,9 @@ Long-running Claude sessions sit in detached terminal tabs and quietly accumulat
 
 ## Install
 
-### User-local (recommended — no sudo)
+**Pick one of the two options below — you don't need both.** Option A is the default; pick Option B only if you want a single install shared by multiple macOS user accounts on the same machine.
+
+### Option A — User-local (recommended, no sudo)
 
 ```bash
 mkdir -p ~/.local/bin
@@ -15,14 +17,16 @@ curl -fsSL https://raw.githubusercontent.com/ozzyfromspace/claude-clean/main/cla
 chmod +x ~/.local/bin/claude-clean
 ```
 
-If `~/.local/bin` isn't on your `PATH` yet:
+If `~/.local/bin` isn't on your `PATH` yet (check with `echo $PATH`):
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-# open a new terminal, or run: hash -r
+# then open a new terminal, or run: hash -r
 ```
 
-### System-wide (needs sudo — useful if multiple macOS accounts share the machine)
+### Option B — System-wide (needs sudo, shared across macOS accounts)
+
+Use this *instead of* Option A if multiple macOS user accounts on this machine should share one install:
 
 ```bash
 sudo curl -fsSL https://raw.githubusercontent.com/ozzyfromspace/claude-clean/main/claude-clean \
