@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# claude-clean — list, protect, or kill stale Claude CLI processes.
+# claude-clean — list, protect, or end stale Claude CLI chats.
 #
-# Lists stale claude processes by default. Shows the iTerm session title
-# (when available) so you can tell which conversation is which.
-# Use --kill to terminate. Protect sessions you want to keep with --protect.
+# Lists stale claude chats by default (active ones are hidden unless --all).
+# Shows the iTerm session title so you can tell which chat is which.
+# Use --kill to end them. Protect chats you want to keep with --protect.
 
 set -eu
 
@@ -12,26 +12,30 @@ PROTECT_DIR="${HOME}/.claude-clean"
 PROTECT_FILE="${PROTECT_DIR}/protected"
 
 threshold="$THRESHOLD_DEFAULT"
+threshold_explicit=0   # becomes 1 if the user passes --older-than
 profile="$(id -un)"
 mode="list"
 target=""
+show_all=0
 
 usage() {
   cat <<EOF
 Usage: claude-clean [options]
 
-List or kill stale Claude CLI processes. Shows the iTerm session title
-for each process so you know what's about to be killed.
+List or end stale Claude CLI chats. Shows the iTerm session title for each
+chat so you know what's about to be ended. By default only stale chats are
+listed — active ones are hidden (use --all to show them).
 
 Options:
-  -k, --kill                Kill STALE processes (default: dry-run list)
+  -k, --kill                End stale chats (default: dry-run list)
+  -a, --all                 Also show active chats (default: stale only)
   --profile=USER            Target a specific user (default: current: $(id -un))
-  --profile=all             Target all users (cross-user kills require sudo)
+  --profile=all             Target all users (cross-user ends require sudo)
   --older-than=DURATION     Staleness threshold. Units: s, m, h, d.
                             Examples: 30m, 2h, 1d, 90d (~3 months).
                             Default: $THRESHOLD_DEFAULT
   --protect[=PID]           Protect PID from --kill. With no PID, protects
-                            the claude session you're currently inside.
+                            the claude chat you're currently inside.
   --unprotect[=PID]         Remove protection. With no PID, unprotects current.
   --list-protected          Show protected PIDs.
   --where                   Print install location and protect-list paths.
@@ -41,12 +45,13 @@ Protected PIDs are stored in $PROTECT_FILE and are skipped
 by --kill even when they are stale. Entries for dead PIDs are pruned each run.
 
 Examples:
-  claude-clean                             # list for current user
-  claude-clean --kill                      # kill stale for current user
+  claude-clean                             # list stale chats for current user
+  claude-clean --all                       # also show active ones
+  claude-clean --kill                      # end stale chats for current user
   claude-clean --profile=otheruser         # list for another local user
-  claude-clean --profile=all --kill        # kill stale everywhere
+  claude-clean --profile=all --kill        # end stale everywhere
   claude-clean --older-than=2h             # tighten threshold
-  claude-clean --protect                   # protect THIS session (run from inside claude)
+  claude-clean --protect                   # protect THIS chat (run from inside claude)
   claude-clean --protect=12345             # protect a specific PID
   claude-clean --list-protected
 EOF
@@ -112,6 +117,7 @@ parse_dur() {
 while [ $# -gt 0 ]; do
   case "$1" in
     -k|--kill)            mode="kill" ;;
+    -a|--all)             show_all=1 ;;
 
     --profile=*)          profile="${1#--profile=}" ;;
     --profile)
@@ -120,11 +126,12 @@ while [ $# -gt 0 ]; do
       profile="$1"
       ;;
 
-    --older-than=*)       threshold="${1#--older-than=}" ;;
+    --older-than=*)       threshold="${1#--older-than=}"; threshold_explicit=1 ;;
     --older-than)
       shift
       [ $# -gt 0 ] || { echo "claude-clean: --older-than requires a value (e.g., 30m, 2h, 1d)" >&2; exit 2; }
       threshold="$1"
+      threshold_explicit=1
       ;;
 
     --protect=*)          mode="protect";   target="${1#--protect=}" ;;
@@ -362,7 +369,7 @@ case "$mode" in
       fi
       if [ "$target_comm" != "claude" ]; then
         echo "claude-clean: PID $pid is a '$target_comm' process, not 'claude' — refusing to protect." >&2
-        echo "  Only claude processes can be protected. See candidates: claude-clean --profile=all" >&2
+        echo "  Only claude chats can be protected. See candidates: claude-clean --profile=all" >&2
         exit 1
       fi
       if is_protected "$pid"; then
@@ -393,7 +400,7 @@ case "$mode" in
     ensure_protect_file
     prune_protect
     if [ ! -s "$PROTECT_FILE" ]; then
-      echo "No protected claude processes."
+      echo "No protected claude chats."
       exit 0
     fi
     echo "Protected claude PIDs:"
@@ -427,10 +434,19 @@ if ! threshold_sec=$(parse_dur "$threshold"); then
   exit 2
 fi
 me_user=$(id -un)
-stale_same=""; stale_cross=""; count=0
+stale_same=""; stale_cross=""
+total_found=0
+visible=0
+hidden_active=0
 
-printf "%-7s %-10s %10s %9s  %-7s %-4s  %s\n" "PID" "USER" "AGE" "RSS" "STATE" "PROT" "TITLE"
-printf "%-7s %-10s %10s %9s  %-7s %-4s  %s\n" "---" "----" "---" "---" "-----" "----" "-----"
+# Data shown should match the filters: hide active+unprotected rows when the
+# user gave an explicit --older-than. No explicit filter (or --all) = show all.
+hide_active=0
+if [ "$threshold_explicit" = "1" ] && [ "$show_all" = "0" ]; then
+  hide_active=1
+fi
+
+rows_output=""
 
 while IFS= read -r row; do
   [ -z "$row" ] && continue
@@ -441,9 +457,10 @@ while IFS= read -r row; do
   rss=$(awk '{print $5}' <<<"$row")
   cmd=$(awk '{print $NF}' <<<"$row")
   [ "$cmd" = "claude" ] || continue
-  # defensive numeric validation — ps should always produce these, but belt-and-suspenders
   case "$pid$rss" in *[!0-9]*|'') continue ;; esac
   is_ancestor "$ancs" "$pid" && continue
+  total_found=$((total_found + 1))
+
   age=$(etime_to_sec "$etm")
   rss_mb=$((rss / 1024))
   title=""
@@ -452,6 +469,7 @@ while IFS= read -r row; do
   fi
   title=$(sanitize "$title")
   title=$(trunc "$title" 60)
+
   if is_protected "$pid"; then prot="yes"; else prot=""; fi
   if [ "$age" -ge "$threshold_sec" ]; then
     state="STALE"
@@ -462,24 +480,44 @@ while IFS= read -r row; do
   else
     state="active"
   fi
-  printf "%-7s %-10s %10s %6d MB  %-7s %-4s  %s\n" "$pid" "$usr" "$etm" "$rss_mb" "$state" "$prot" "$title"
-  count=$((count + 1))
+
+  # Skip active+unprotected rows when the user set an explicit --older-than
+  # and didn't ask for --all. Keeps display aligned with the filter.
+  if [ "$hide_active" = "1" ] && [ "$state" = "active" ] && [ -z "$prot" ]; then
+    hidden_active=$((hidden_active + 1))
+    continue
+  fi
+
+  rows_output="${rows_output}$(printf "%-7s %-10s %10s %6d MB  %-7s %-4s  %s" "$pid" "$usr" "$etm" "$rss_mb" "$state" "$prot" "$title")"$'\n'
+  visible=$((visible + 1))
 done <<<"$ps_rows"
 
-if [ "$count" -eq 0 ]; then
-  echo "No claude processes found for profile '$profile'."
+# Print the table only when there's at least one visible row.
+if [ "$visible" -gt 0 ]; then
+  printf "%-7s %-10s %10s %9s  %-7s %-4s  %s\n" "PID" "USER" "AGE" "RSS" "STATE" "PROT" "TITLE"
+  printf "%-7s %-10s %10s %9s  %-7s %-4s  %s\n" "---" "----" "---" "---" "-----" "----" "-----"
+  printf '%s' "$rows_output"
+fi
+
+if [ "$total_found" = "0" ]; then
+  echo "No claude chats found for profile '$profile'."
   exit 0
+fi
+
+if [ "$hidden_active" -gt 0 ]; then
+  [ "$visible" -gt 0 ] && echo
+  echo "$hidden_active active chat(s) hidden — use --all to show."
 fi
 
 if [ -z "$stale_same$stale_cross" ]; then
   echo
-  echo "No stale processes to kill (threshold: $threshold)."
+  echo "No stale chats to end (threshold: $threshold)."
   exit 0
 fi
 
 if [ "$mode" != "kill" ]; then
   echo
-  echo "Run with --kill to terminate STALE processes."
+  echo "Run with --kill to end stale chats."
   exit 0
 fi
 
@@ -502,7 +540,7 @@ if [ -n "$stale_same" ]; then
   echo
   stale_same=$(verify_still_claude $stale_same)
   if [ -n "$stale_same" ]; then
-    echo "Ending your stale session(s):$stale_same"
+    echo "Ending your stale chat(s):$stale_same"
     # `--` prevents any numeric-looking argument from being parsed as a flag
     # (e.g. a negative PID meaning "process group", or kill -SIGNAL syntax)
     kill -- $stale_same 2>&1 || true
@@ -511,7 +549,7 @@ fi
 if [ -n "$stale_cross" ]; then
   stale_cross=$(verify_still_claude $stale_cross)
   if [ -n "$stale_cross" ]; then
-    echo "Ending stale session(s) on other users (sudo may prompt):$stale_cross"
+    echo "Ending stale chats on other users (sudo may prompt):$stale_cross"
     sudo kill -- $stale_cross 2>&1 || true
   fi
 fi

@@ -153,11 +153,104 @@ t_prune_drops_stale_and_garbage_entries() {
     || { echo "protect file still has content: $(cat "$HOME/.claude-clean/protected")"; return 1; }
 }
 
-t_list_default_shows_column_headers() {
-  local out; out=$("$SCRIPT" 2>&1) || { echo "default run failed"; return 1; }
-  contains "PID" "$out" || { echo "missing PID header"; return 1; }
-  contains "STATE" "$out" || { echo "missing STATE header"; return 1; }
-  contains "TITLE" "$out" || { echo "missing TITLE header"; return 1; }
+t_list_shows_column_headers_when_rows_exist() {
+  # Headers only print when there's at least one visible row. Use a fake
+  # claude to guarantee deterministic output regardless of the real
+  # process landscape.
+  local fakedir fakepid errs=""
+  fakedir=$(mktemp -d)
+  ln -s /bin/sleep "$fakedir/claude"
+  PATH="$fakedir:$PATH" claude 30 &
+  fakepid=$!
+  sleep 0.2
+
+  local out; out=$("$SCRIPT" 2>&1) || errs="$errs  list exited nonzero: $out\n"
+  contains "PID"   "$out" || errs="$errs  missing PID header\n"
+  contains "STATE" "$out" || errs="$errs  missing STATE header\n"
+  contains "TITLE" "$out" || errs="$errs  missing TITLE header\n"
+
+  kill "$fakepid" 2>/dev/null || true
+  wait "$fakepid" 2>/dev/null || true
+  rm -rf "$fakedir"
+  if [ -n "$errs" ]; then printf "%b" "$errs"; return 1; fi
+}
+
+t_explicit_threshold_hides_active_rows() {
+  # With --older-than set, a fresh fake claude (a few seconds old) is active
+  # and should be HIDDEN, with a hint mentioning '--all'.
+  local fakedir fakepid errs=""
+  fakedir=$(mktemp -d)
+  ln -s /bin/sleep "$fakedir/claude"
+  PATH="$fakedir:$PATH" claude 30 &
+  fakepid=$!
+  sleep 0.2
+
+  local out; out=$("$SCRIPT" --older-than=1h 2>&1) || errs="$errs  list exited nonzero\n"
+  # The fake's PID should NOT appear since it's active+unprotected
+  case "$out" in *"$fakepid"*) errs="$errs  fake PID $fakepid leaked into output: $out\n" ;; esac
+  contains "hidden" "$out" || errs="$errs  missing 'hidden' hint: $out\n"
+  contains "--all"  "$out" || errs="$errs  missing '--all' suggestion: $out\n"
+
+  kill "$fakepid" 2>/dev/null || true
+  wait "$fakepid" 2>/dev/null || true
+  rm -rf "$fakedir"
+  if [ -n "$errs" ]; then printf "%b" "$errs"; return 1; fi
+}
+
+t_no_filter_shows_all_including_active() {
+  # Without --older-than, active rows should be listed (no implicit hiding).
+  local fakedir fakepid errs=""
+  fakedir=$(mktemp -d)
+  ln -s /bin/sleep "$fakedir/claude"
+  PATH="$fakedir:$PATH" claude 30 &
+  fakepid=$!
+  sleep 0.2
+
+  local out; out=$("$SCRIPT" 2>&1) || errs="$errs  list exited nonzero\n"
+  contains "$fakepid" "$out" || errs="$errs  active PID $fakepid missing without explicit filter: $out\n"
+  # Should NOT say anything about hidden rows, since we didn't hide any.
+  case "$out" in *"hidden"*) errs="$errs  spurious 'hidden' hint when no filter set: $out\n" ;; esac
+
+  kill "$fakepid" 2>/dev/null || true
+  wait "$fakepid" 2>/dev/null || true
+  rm -rf "$fakedir"
+  if [ -n "$errs" ]; then printf "%b" "$errs"; return 1; fi
+}
+
+t_short_flag_a_equals_all() {
+  # -a should be an alias for --all.
+  local fakedir fakepid errs=""
+  fakedir=$(mktemp -d)
+  ln -s /bin/sleep "$fakedir/claude"
+  PATH="$fakedir:$PATH" claude 30 &
+  fakepid=$!
+  sleep 0.2
+
+  local out; out=$("$SCRIPT" --older-than=1h -a 2>&1) || errs="$errs  list exited nonzero\n"
+  contains "$fakepid" "$out" || errs="$errs  -a did not reveal active PID $fakepid: $out\n"
+
+  kill "$fakepid" 2>/dev/null || true
+  wait "$fakepid" 2>/dev/null || true
+  rm -rf "$fakedir"
+  if [ -n "$errs" ]; then printf "%b" "$errs"; return 1; fi
+}
+
+t_all_flag_shows_active_rows() {
+  # --all should reveal the otherwise-hidden active row.
+  local fakedir fakepid errs=""
+  fakedir=$(mktemp -d)
+  ln -s /bin/sleep "$fakedir/claude"
+  PATH="$fakedir:$PATH" claude 30 &
+  fakepid=$!
+  sleep 0.2
+
+  local out; out=$("$SCRIPT" --older-than=1h --all 2>&1) || errs="$errs  list exited nonzero\n"
+  contains "$fakepid" "$out" || errs="$errs  fake PID $fakepid missing with --all: $out\n"
+
+  kill "$fakepid" 2>/dev/null || true
+  wait "$fakepid" 2>/dev/null || true
+  rm -rf "$fakedir"
+  if [ -n "$errs" ]; then printf "%b" "$errs"; return 1; fi
 }
 
 t_unprotect_noop_is_honest() {
@@ -338,7 +431,11 @@ run_test "symlinked protect dir refused"                      t_symlink_protect_
 run_test "symlinked protect file refused, target untouched"   t_symlink_protect_file_refused_and_target_untouched
 run_test "protect dir=700 / file=600 perms enforced"          t_protect_file_perms_are_strict
 run_test "prune drops stale + garbage entries from file"      t_prune_drops_stale_and_garbage_entries
-run_test "default list shows expected column headers"         t_list_default_shows_column_headers
+run_test "default list shows column headers when rows exist" t_list_shows_column_headers_when_rows_exist
+run_test "--older-than hides active rows (data matches filter)" t_explicit_threshold_hides_active_rows
+run_test "no filter: default shows all, no 'hidden' hint"     t_no_filter_shows_all_including_active
+run_test "-a short flag equals --all"                         t_short_flag_a_equals_all
+run_test "--all reveals active rows despite filter"           t_all_flag_shows_active_rows
 run_test "space form: --older-than 5s"                        t_space_form_older_than
 run_test "space form: --profile USER"                         t_space_form_profile
 run_test "--older-than with no value rejected"                t_older_than_missing_value_rejected
