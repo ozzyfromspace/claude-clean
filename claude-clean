@@ -271,6 +271,17 @@ case "$mode" in
       fi
     fi
     if [ "$mode" = "protect" ]; then
+      # Verify the target PID is actually a live claude process. Otherwise we'd
+      # claim success and then silently prune it on the next run.
+      target_comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+      if [ -z "$target_comm" ]; then
+        echo "claude-clean: PID $pid not found" >&2
+        exit 1
+      fi
+      if [ "$target_comm" != "claude" ]; then
+        echo "claude-clean: PID $pid is not a claude process (it's '$target_comm')" >&2
+        exit 1
+      fi
       if is_protected "$pid"; then
         echo "PID $pid is already protected."
       else
@@ -278,13 +289,19 @@ case "$mode" in
         echo "Protected PID $pid."
       fi
     else
-      tmp=$(mktemp)
-      chmod 600 "$tmp" 2>/dev/null || true
-      grep -vxF "$pid" "$PROTECT_FILE" > "$tmp" 2>/dev/null || true
-      cat "$tmp" > "$PROTECT_FILE"
-      rm -f "$tmp"
-      chmod 600 "$PROTECT_FILE" 2>/dev/null || true
-      echo "Unprotected PID $pid."
+      # Unprotect is permissive about the PID being dead (so you can clean up
+      # stale entries), but it should be honest about whether anything changed.
+      if ! is_protected "$pid"; then
+        echo "PID $pid was not protected."
+      else
+        tmp=$(mktemp)
+        chmod 600 "$tmp" 2>/dev/null || true
+        grep -vxF "$pid" "$PROTECT_FILE" > "$tmp" 2>/dev/null || true
+        cat "$tmp" > "$PROTECT_FILE"
+        rm -f "$tmp"
+        chmod 600 "$PROTECT_FILE" 2>/dev/null || true
+        echo "Unprotected PID $pid."
+      fi
     fi
     prune_protect
     exit 0

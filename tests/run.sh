@@ -134,12 +134,17 @@ t_protect_file_perms_are_strict() {
   [ "$file_mode" = "600" ] || { echo "file mode $file_mode, expected 600"; return 1; }
 }
 
-t_protect_round_trip_with_fake_pid_auto_prunes() {
-  # Protecting a non-existent PID should succeed but prune to empty on next run.
-  "$SCRIPT" --protect=99999 >/dev/null 2>&1 || { echo "protect failed"; return 1; }
-  local listed; listed=$("$SCRIPT" --list-protected 2>&1)
-  # 99999 is not a claude process, so prune empties it:
-  contains "No protected" "$listed" || { echo "stale PID not pruned: $listed"; return 1; }
+t_prune_drops_stale_and_garbage_entries() {
+  # Seed the protect file with a mix of dead PIDs and garbage lines. Any
+  # invocation runs prune_protect, which should clean them all out.
+  mkdir "$HOME/.claude-clean"
+  printf '%s\n' "99999" "notanumber" "" "88888" "-5" > "$HOME/.claude-clean/protected"
+  local out; out=$("$SCRIPT" --list-protected 2>&1) || { echo "list failed"; return 1; }
+  contains "No protected" "$out" \
+    || { echo "prune did not empty stale/garbage entries: $out"; return 1; }
+  # Also verify the file on disk is empty.
+  [ ! -s "$HOME/.claude-clean/protected" ] \
+    || { echo "protect file still has content: $(cat "$HOME/.claude-clean/protected")"; return 1; }
 }
 
 t_list_default_shows_column_headers() {
@@ -147,6 +152,30 @@ t_list_default_shows_column_headers() {
   contains "PID" "$out" || { echo "missing PID header"; return 1; }
   contains "STATE" "$out" || { echo "missing STATE header"; return 1; }
   contains "TITLE" "$out" || { echo "missing TITLE header"; return 1; }
+}
+
+t_unprotect_noop_is_honest() {
+  # Unprotecting a PID that was never protected must NOT falsely claim success.
+  local out; out=$("$SCRIPT" --unprotect=99999 2>&1)
+  contains "was not protected" "$out" \
+    || { echo "expected 'was not protected' but got: $out"; return 1; }
+  case "$out" in *"Unprotected PID"*) echo "falsely claimed success: $out"; return 1 ;; esac
+}
+
+t_protect_nonexistent_pid_rejected() {
+  # Protecting a PID that doesn't exist used to silently succeed then get
+  # pruned on the next run. Must fail loudly instead.
+  local out; out=$("$SCRIPT" --protect=99999 2>&1) && { echo "should have errored"; return 1; }
+  contains "not found" "$out" \
+    || { echo "expected 'not found' but got: $out"; return 1; }
+}
+
+t_protect_non_claude_pid_rejected() {
+  # Protecting a real but non-claude process (e.g., our own shell) must fail.
+  # $$ = the test's shell PID; its comm is definitely not 'claude'.
+  local out; out=$("$SCRIPT" --protect=$$ 2>&1) && { echo "should have errored"; return 1; }
+  contains "is not a claude process" "$out" \
+    || { echo "expected rejection but got: $out"; return 1; }
 }
 
 t_sanitize_strips_control_bytes() {
@@ -181,10 +210,13 @@ run_test "profile: nonexistent user rejected"                 t_bad_user_rejecte
 run_test "profile: empty value rejected"                      t_empty_profile_rejected
 run_test "--list-protected on fresh HOME is empty"            t_list_protected_empty
 run_test "--protect with non-numeric PID rejected"            t_protect_invalid_pid_rejected
+run_test "--unprotect on not-protected PID is honest"         t_unprotect_noop_is_honest
+run_test "--protect on nonexistent PID fails loudly"          t_protect_nonexistent_pid_rejected
+run_test "--protect on non-claude PID fails loudly"           t_protect_non_claude_pid_rejected
 run_test "symlinked protect dir refused"                      t_symlink_protect_dir_refused
 run_test "symlinked protect file refused, target untouched"   t_symlink_protect_file_refused_and_target_untouched
 run_test "protect dir=700 / file=600 perms enforced"          t_protect_file_perms_are_strict
-run_test "stale PID in protect list auto-pruned"              t_protect_round_trip_with_fake_pid_auto_prunes
+run_test "prune drops stale + garbage entries from file"      t_prune_drops_stale_and_garbage_entries
 run_test "default list shows expected column headers"         t_list_default_shows_column_headers
 run_test "sanitize strips ESC/BEL control bytes"              t_sanitize_strips_control_bytes
 
