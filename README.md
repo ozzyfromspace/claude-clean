@@ -104,3 +104,7 @@ Each test runs in an isolated `$HOME` temp dir and covers CLI validation, durati
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+_Vibe coded with love, lol_ ❤️
