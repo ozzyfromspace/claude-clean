@@ -50,18 +50,24 @@ Then remove them in one of these ways:
 
 **Scripted (parses `--where` output):**
 
-If you used the user-local install (Option A):
+Capture the paths first — once the binary is deleted, a second `claude-clean --where` call won't work:
 
 ```bash
-rm "$(claude-clean --where | awk '/^binary:/ {print $2}')"
-rm -rf "$(claude-clean --where | awk '/^protect-dir:/ {print $2}')"
+info=$(claude-clean --where)
+bin=$(echo "$info" | awk '/^binary:/ {print $2}')
+dir=$(echo "$info" | awk '/^protect-dir:/ {print $2}')
 ```
 
-If you used the system-wide install (Option B), the binary is root-owned, so prefix the first line with `sudo`:
+Then remove. For a **user-local (Option A)** install:
 
 ```bash
-sudo rm "$(claude-clean --where | awk '/^binary:/ {print $2}')"
-rm -rf "$(claude-clean --where | awk '/^protect-dir:/ {print $2}')"
+rm "$bin" && rm -rf "$dir"
+```
+
+For a **system-wide (Option B)** install the binary is root-owned, so:
+
+```bash
+sudo rm "$bin" && rm -rf "$dir"
 ```
 
 **By hand:**
