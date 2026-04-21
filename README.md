@@ -93,4 +93,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-_Vibe coded with love, lol_ ❤️
+_Vibe coded with love_ ❤️

@@ -52,24 +52,47 @@ Examples:
 EOF
 }
 
+# For a fractional duration like 2.5h, suggest the equivalent in a smaller
+# unit so the user has a concrete fix. Returns empty string if the input
+# doesn't map cleanly.
+suggest_smaller_unit() {
+  local num="$1" unit="$2"
+  case "$unit" in
+    h) awk -v n="$num" 'BEGIN { printf "%dm", n * 60 }' 2>/dev/null ;;
+    d) awk -v n="$num" 'BEGIN { printf "%dh", n * 24 }' 2>/dev/null ;;
+    m) awk -v n="$num" 'BEGIN { printf "%ds", n * 60 }' 2>/dev/null ;;
+  esac
+}
+
 parse_dur() {
   local d="$1" num unit
   if [ -z "$d" ]; then
-    echo "claude-clean: duration is empty" >&2
-    echo "  Supported units: s (seconds), m (minutes), h (hours), d (days)" >&2
-    echo "  Examples: 30m, 2h, 1d, 90d" >&2
+    echo "claude-clean: duration is empty." >&2
+    echo "  Supported units: s (seconds), m (minutes), h (hours), d (days)." >&2
+    echo "  Examples: 30m, 2h, 1d, 90d." >&2
     return 2
   fi
   unit="${d##*[0-9]}"
   num="${d%"$unit"}"
   if [ -z "$num" ]; then
-    echo "claude-clean: duration must start with a number: '$d'" >&2
-    echo "  Examples: 30m, 2h, 1d, 90d" >&2
+    echo "claude-clean: duration must start with a number: '$d'." >&2
+    echo "  Examples: 30m (30 minutes), 2h (2 hours), 1d (1 day)." >&2
     return 2
   fi
   case "$num" in
+    *.*)
+      # Fractional — suggest the whole-number equivalent in a smaller unit.
+      local alt; alt=$(suggest_smaller_unit "$num" "$unit")
+      echo "claude-clean: fractional durations aren't supported: '$d'." >&2
+      if [ -n "$alt" ]; then
+        echo "  Try '$alt' instead (whole numbers only)." >&2
+      else
+        echo "  Whole numbers only. Supported units: s, m, h, d." >&2
+      fi
+      return 2 ;;
     *[!0-9]*)
-      echo "claude-clean: invalid number '$num' in duration '$d' (use whole numbers only, no decimals/spaces)" >&2
+      echo "claude-clean: '$num' isn't a valid number in duration '$d' (whole numbers only, no spaces)." >&2
+      echo "  Examples: 30m, 2h, 1d. For longer than days, multiply: 90d (~3 months)." >&2
       return 2 ;;
   esac
   case "$unit" in
@@ -79,9 +102,9 @@ parse_dur() {
     h)   echo $((10#$num * 3600)) ;;
     d)   echo $((10#$num * 86400)) ;;
     *)
-      echo "claude-clean: unknown time suffix '$unit' in '$d'" >&2
-      echo "  Supported units: s (seconds), m (minutes), h (hours), d (days)" >&2
-      echo "  For longer durations, use days: 14d (~2 weeks), 90d (~3 months), 365d (1 year)" >&2
+      echo "claude-clean: unknown time suffix '$unit' in '$d'." >&2
+      echo "  Supported units: s (seconds), m (minutes), h (hours), d (days)." >&2
+      echo "  For longer durations, use days: 14d (~2 weeks), 90d (~3 months), 365d (1 year)." >&2
       return 2 ;;
   esac
 }
@@ -207,8 +230,9 @@ ensure_protect_file() {
   # pre-placed by a malicious process to redirect our writes onto arbitrary
   # files in the user's home (e.g., ~/.ssh/authorized_keys).
   if [ -L "$PROTECT_DIR" ]; then
-    echo "claude-clean: $PROTECT_DIR is a symlink; refusing to operate" >&2
-    echo "  Remove or replace it with a real directory you own, then retry." >&2
+    echo "claude-clean: $PROTECT_DIR is a symlink; refusing to operate on it." >&2
+    echo "  This is a safety check against redirected writes." >&2
+    echo "  Fix: rm '$PROTECT_DIR' (then claude-clean will re-create it normally)." >&2
     exit 1
   fi
   if [ ! -d "$PROTECT_DIR" ]; then
@@ -216,13 +240,15 @@ ensure_protect_file() {
   fi
   owner=$(stat -f '%Su' "$PROTECT_DIR" 2>/dev/null || echo "")
   if [ -n "$owner" ] && [ "$owner" != "$expected_user" ]; then
-    echo "claude-clean: $PROTECT_DIR owned by '$owner', not '$expected_user'; refusing" >&2
+    echo "claude-clean: $PROTECT_DIR is owned by '$owner', not you ('$expected_user'); refusing." >&2
+    echo "  Fix: delete the directory and retry (rm -rf '$PROTECT_DIR')." >&2
     exit 1
   fi
   chmod 700 "$PROTECT_DIR" 2>/dev/null || true
 
   if [ -L "$PROTECT_FILE" ]; then
-    echo "claude-clean: $PROTECT_FILE is a symlink; refusing to operate" >&2
+    echo "claude-clean: $PROTECT_FILE is a symlink; refusing to operate on it." >&2
+    echo "  Fix: rm '$PROTECT_FILE' (then claude-clean will re-create it normally)." >&2
     exit 1
   fi
   if [ ! -f "$PROTECT_FILE" ]; then
@@ -230,7 +256,8 @@ ensure_protect_file() {
   else
     owner=$(stat -f '%Su' "$PROTECT_FILE" 2>/dev/null || echo "")
     if [ -n "$owner" ] && [ "$owner" != "$expected_user" ]; then
-      echo "claude-clean: $PROTECT_FILE owned by '$owner', not '$expected_user'; refusing" >&2
+      echo "claude-clean: $PROTECT_FILE is owned by '$owner', not you ('$expected_user'); refusing." >&2
+      echo "  Fix: rm '$PROTECT_FILE' and retry." >&2
       exit 1
     fi
     chmod 600 "$PROTECT_FILE" 2>/dev/null || true
@@ -311,13 +338,16 @@ case "$mode" in
     pid=""
     if [ "$target" = "." ] || [ -z "$target" ]; then
       if ! pid=$(find_my_claude_pid); then
-        echo "claude-clean: not running inside a claude session — pass a PID explicitly" >&2
+        echo "claude-clean: can't find a claude session in this shell's ancestors." >&2
+        echo "  If you're protecting from outside a claude session, pass the PID:" >&2
+        echo "    claude-clean --protect 12345" >&2
         exit 1
       fi
     else
       pid="$target"
       if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
-        echo "claude-clean: invalid PID: $pid" >&2
+        echo "claude-clean: invalid PID '$pid' (PIDs must be positive whole numbers)." >&2
+        echo "  To protect the current claude session instead: claude-clean --protect" >&2
         exit 1
       fi
     fi
@@ -326,11 +356,13 @@ case "$mode" in
       # claim success and then silently prune it on the next run.
       target_comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
       if [ -z "$target_comm" ]; then
-        echo "claude-clean: PID $pid not found" >&2
+        echo "claude-clean: PID $pid not found (no running process has that ID)." >&2
+        echo "  See running claude processes: claude-clean --profile=all" >&2
         exit 1
       fi
       if [ "$target_comm" != "claude" ]; then
-        echo "claude-clean: PID $pid is not a claude process (it's '$target_comm')" >&2
+        echo "claude-clean: PID $pid is a '$target_comm' process, not 'claude' — refusing to protect." >&2
+        echo "  Only claude processes can be protected. See candidates: claude-clean --profile=all" >&2
         exit 1
       fi
       if is_protected "$pid"; then

@@ -67,6 +67,12 @@ t_decimal_duration_rejected() {
   contains "whole numbers" "$out" || { echo "decimal not caught: $out"; return 1; }
 }
 
+t_fractional_duration_suggests_conversion() {
+  # 2.5h → error should suggest '150m' so the user has a concrete fix.
+  local out; out=$("$SCRIPT" --older-than=2.5h 2>&1) && { echo "should have errored"; return 1; }
+  contains "150m" "$out" || { echo "missing 150m suggestion for 2.5h: $out"; return 1; }
+}
+
 t_empty_duration_rejected() {
   local out; out=$("$SCRIPT" --older-than= 2>&1) && { echo "should have errored"; return 1; }
   contains "empty" "$out" || { echo "empty not caught: $out"; return 1; }
@@ -174,7 +180,7 @@ t_protect_non_claude_pid_rejected() {
   # Protecting a real but non-claude process (e.g., our own shell) must fail.
   # $$ = the test's shell PID; its comm is definitely not 'claude'.
   local out; out=$("$SCRIPT" --protect=$$ 2>&1) && { echo "should have errored"; return 1; }
-  contains "is not a claude process" "$out" \
+  contains "not 'claude'" "$out" \
     || { echo "expected rejection but got: $out"; return 1; }
 }
 
@@ -316,6 +322,7 @@ run_test "unknown flag is rejected"                           t_unknown_flag_rej
 run_test "duration: 5mo rejected with helpful message"        t_bad_duration_suffix
 run_test "duration: 5months rejected"                         t_months_suffix_rejected
 run_test "duration: 1.5h rejected (no decimals)"              t_decimal_duration_rejected
+run_test "duration: 2.5h error suggests '150m'"               t_fractional_duration_suggests_conversion
 run_test "duration: empty rejected"                           t_empty_duration_rejected
 run_test "duration: abc rejected"                             t_no_number_rejected
 run_test "duration: 09m parses (no octal surprise)"           t_leading_zero_duration_parses
