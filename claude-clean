@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+# claude-clean — list, protect, or kill stale Claude CLI processes.
+#
+# Lists stale claude processes by default. Shows the iTerm session title
+# (when available) so you can tell which conversation is which.
+# Use --kill to terminate. Protect sessions you want to keep with --protect.
+
+set -eu
+
+THRESHOLD_DEFAULT="6h"
+PROTECT_DIR="${HOME}/.claude-clean"
+PROTECT_FILE="${PROTECT_DIR}/protected"
+
+threshold="$THRESHOLD_DEFAULT"
+profile="$(id -un)"
+mode="list"
+target=""
+
+usage() {
+  cat <<EOF
+Usage: claude-clean [options]
+
+List or kill stale Claude CLI processes. Shows the iTerm session title
+for each process so you know what's about to be killed.
+
+Options:
+  -k, --kill                Kill STALE processes (default: dry-run list)
+  --profile=USER            Target a specific user (default: current: $(id -un))
+  --profile=all             Target all users (cross-user kills require sudo)
+  --older-than=DURATION     Staleness threshold. Units: s, m, h, d.
+                            Examples: 30m, 2h, 1d, 90d (~3 months).
+                            Default: $THRESHOLD_DEFAULT
+  --protect[=PID]           Protect PID from --kill. With no PID, protects
+                            the claude session you're currently inside.
+  --unprotect[=PID]         Remove protection. With no PID, unprotects current.
+  --list-protected          Show protected PIDs.
+  -h, --help                Show this help
+
+Protected PIDs are stored in $PROTECT_FILE and are skipped
+by --kill even when they are stale. Entries for dead PIDs are pruned each run.
+
+Examples:
+  claude-clean                             # list for current user
+  claude-clean --kill                      # kill stale for current user
+  claude-clean --profile=further           # list for further
+  claude-clean --profile=all --kill        # kill stale everywhere
+  claude-clean --older-than=2h             # tighten threshold
+  claude-clean --protect                   # protect THIS session (run from inside claude)
+  claude-clean --protect=12345             # protect a specific PID
+  claude-clean --list-protected
+EOF
+}
+
+parse_dur() {
+  local d="$1" num unit
+  if [ -z "$d" ]; then
+    echo "claude-clean: duration is empty" >&2
+    echo "  Supported units: s (seconds), m (minutes), h (hours), d (days)" >&2
+    echo "  Examples: 30m, 2h, 1d, 90d" >&2
+    return 2
+  fi
+  unit="${d##*[0-9]}"
+  num="${d%"$unit"}"
+  if [ -z "$num" ]; then
+    echo "claude-clean: duration must start with a number: '$d'" >&2
+    echo "  Examples: 30m, 2h, 1d, 90d" >&2
+    return 2
+  fi
+  case "$num" in
+    *[!0-9]*)
+      echo "claude-clean: invalid number '$num' in duration '$d' (use whole numbers only, no decimals/spaces)" >&2
+      return 2 ;;
+  esac
+  case "$unit" in
+    "")  echo $((10#$num)) ;;
+    s)   echo $((10#$num)) ;;
+    m)   echo $((10#$num * 60)) ;;
+    h)   echo $((10#$num * 3600)) ;;
+    d)   echo $((10#$num * 86400)) ;;
+    *)
+      echo "claude-clean: unknown time suffix '$unit' in '$d'" >&2
+      echo "  Supported units: s (seconds), m (minutes), h (hours), d (days)" >&2
+      echo "  For longer durations, use days: 14d (~2 weeks), 90d (~3 months), 365d (1 year)" >&2
+      return 2 ;;
+  esac
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -k|--kill)            mode="kill" ;;
+    --profile=*)          profile="${1#--profile=}" ;;
+    --older-than=*)       threshold="${1#--older-than=}" ;;
+    --protect)            mode="protect";   target="." ;;
+    --protect=*)          mode="protect";   target="${1#--protect=}" ;;
+    --unprotect)          mode="unprotect"; target="." ;;
+    --unprotect=*)        mode="unprotect"; target="${1#--unprotect=}" ;;
+    --list-protected)     mode="list-protected" ;;
+    -h|--help)            usage; exit 0 ;;
+    *) echo "claude-clean: unknown option: $1" >&2; echo "Run 'claude-clean --help' for usage." >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [ -z "$profile" ]; then
+  echo "claude-clean: --profile requires a username or 'all' (got empty)" >&2
+  exit 2
+fi
+if [ "$profile" != "all" ] && ! id -u "$profile" >/dev/null 2>&1; then
+  echo "claude-clean: no such user '$profile'" >&2
+  echo "  Use --profile=all to target every user, or check the spelling." >&2
+  exit 2
+fi
+
+# -------- helpers --------
+etime_to_sec() {
+  local t="$1" d=0 h=0 m=0 s=0
+  if [[ "$t" == *-* ]]; then d="${t%%-*}"; t="${t#*-}"; fi
+  local c="${t//[^:]/}"
+  if   [ ${#c} = 2 ]; then IFS=: read -r h m s <<<"$t"
+  elif [ ${#c} = 1 ]; then IFS=: read -r m s <<<"$t"
+  else s="$t"
+  fi
+  echo $((10#$d * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s))
+}
+
+find_my_claude_pid() {
+  local p=$$ comm
+  while [ "$p" -gt 1 ]; do
+    comm=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ' ')
+    if [ "$comm" = "claude" ]; then echo "$p"; return 0; fi
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    [ -z "$p" ] && break
+  done
+  return 1
+}
+
+ancestors_list() {
+  local p=$$ out=""
+  while [ "$p" -gt 1 ]; do
+    out="$out $p"
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    [ -z "$p" ] && break
+  done
+  echo "$out"
+}
+
+is_ancestor() {
+  case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac
+}
+
+ensure_protect_file() {
+  local expected_user owner
+  expected_user=$(id -un)
+
+  # Refuse to follow symlinks into unknown territory — a symlink could be
+  # pre-placed by a malicious process to redirect our writes onto arbitrary
+  # files in the user's home (e.g., ~/.ssh/authorized_keys).
+  if [ -L "$PROTECT_DIR" ]; then
+    echo "claude-clean: $PROTECT_DIR is a symlink; refusing to operate" >&2
+    echo "  Remove or replace it with a real directory you own, then retry." >&2
+    exit 1
+  fi
+  if [ ! -d "$PROTECT_DIR" ]; then
+    (umask 077 && mkdir "$PROTECT_DIR")
+  fi
+  owner=$(stat -f '%Su' "$PROTECT_DIR" 2>/dev/null || echo "")
+  if [ -n "$owner" ] && [ "$owner" != "$expected_user" ]; then
+    echo "claude-clean: $PROTECT_DIR owned by '$owner', not '$expected_user'; refusing" >&2
+    exit 1
+  fi
+  chmod 700 "$PROTECT_DIR" 2>/dev/null || true
+
+  if [ -L "$PROTECT_FILE" ]; then
+    echo "claude-clean: $PROTECT_FILE is a symlink; refusing to operate" >&2
+    exit 1
+  fi
+  if [ ! -f "$PROTECT_FILE" ]; then
+    (umask 077 && : > "$PROTECT_FILE")
+  else
+    owner=$(stat -f '%Su' "$PROTECT_FILE" 2>/dev/null || echo "")
+    if [ -n "$owner" ] && [ "$owner" != "$expected_user" ]; then
+      echo "claude-clean: $PROTECT_FILE owned by '$owner', not '$expected_user'; refusing" >&2
+      exit 1
+    fi
+    chmod 600 "$PROTECT_FILE" 2>/dev/null || true
+  fi
+}
+
+prune_protect() {
+  ensure_protect_file
+  local tmp comm
+  tmp=$(mktemp)
+  chmod 600 "$tmp" 2>/dev/null || true
+  while IFS= read -r pid; do
+    case "$pid" in
+      ''|*[!0-9]*) continue ;;  # skip blanks, garbage, hand-edited junk
+    esac
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ "$comm" = "claude" ] && echo "$pid" >> "$tmp"
+  done < "$PROTECT_FILE"
+  # Write contents in place rather than `mv`: mv would replace a symlink
+  # (if one appeared between the ensure_protect_file check and now),
+  # whereas redirection into an existing non-symlink file is safe.
+  cat "$tmp" > "$PROTECT_FILE"
+  rm -f "$tmp"
+  chmod 600 "$PROTECT_FILE" 2>/dev/null || true
+}
+
+is_protected() { grep -qxF "$1" "$PROTECT_FILE" 2>/dev/null; }
+
+fetch_iterm_titles() {
+  pgrep -qx iTerm2 || return 0
+  osascript 2>/dev/null <<'AS' || true
+tell application "iTerm2"
+  set out to ""
+  try
+    repeat with w in windows
+      try
+        repeat with t in tabs of w
+          try
+            repeat with s in sessions of t
+              try
+                set out to out & (tty of s) & "|" & (name of s) & linefeed
+              end try
+            end repeat
+          end try
+        end repeat
+      end try
+    end repeat
+  end try
+  return out
+end tell
+AS
+}
+
+resolve_tty_title() {
+  local tty="$1" raw="$2"
+  [ -z "$raw" ] && return 0
+  echo "$raw" | awk -F'|' -v t="/dev/$tty" '$1 == t { sub("^[^|]*\\|", ""); print; exit }'
+}
+
+trunc() {
+  local s="$1" n="$2"
+  if [ "${#s}" -gt "$n" ]; then printf "%s…" "${s:0:$((n - 1))}"
+  else printf "%s" "$s"
+  fi
+}
+
+# Strip ASCII control characters (0x00-0x1F and 0x7F) from externally-sourced
+# strings before printing them. Otherwise a malicious iTerm session name could
+# carry ANSI escape sequences that our terminal would execute when we echo.
+sanitize() {
+  printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'
+}
+
+# -------- protect / unprotect / list-protected --------
+case "$mode" in
+  protect|unprotect)
+    ensure_protect_file
+    pid=""
+    if [ "$target" = "." ] || [ -z "$target" ]; then
+      if ! pid=$(find_my_claude_pid); then
+        echo "claude-clean: not running inside a claude session — pass a PID explicitly" >&2
+        exit 1
+      fi
+    else
+      pid="$target"
+      if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+        echo "claude-clean: invalid PID: $pid" >&2
+        exit 1
+      fi
+    fi
+    if [ "$mode" = "protect" ]; then
+      if is_protected "$pid"; then
+        echo "PID $pid is already protected."
+      else
+        echo "$pid" >> "$PROTECT_FILE"
+        echo "Protected PID $pid."
+      fi
+    else
+      tmp=$(mktemp)
+      chmod 600 "$tmp" 2>/dev/null || true
+      grep -vxF "$pid" "$PROTECT_FILE" > "$tmp" 2>/dev/null || true
+      cat "$tmp" > "$PROTECT_FILE"
+      rm -f "$tmp"
+      chmod 600 "$PROTECT_FILE" 2>/dev/null || true
+      echo "Unprotected PID $pid."
+    fi
+    prune_protect
+    exit 0
+    ;;
+  list-protected)
+    ensure_protect_file
+    prune_protect
+    if [ ! -s "$PROTECT_FILE" ]; then
+      echo "No protected claude processes."
+      exit 0
+    fi
+    echo "Protected claude PIDs:"
+    cat "$PROTECT_FILE"
+    exit 0
+    ;;
+esac
+
+# -------- list / kill --------
+ensure_protect_file
+prune_protect
+
+ancs=$(ancestors_list)
+titles_raw=$(fetch_iterm_titles)
+
+if [ "$profile" = "all" ]; then
+  ps_rows=$(ps -axo pid=,user=,etime=,tty=,rss=,comm=)
+else
+  ps_rows=$(ps -U "$profile" -o pid=,user=,etime=,tty=,rss=,comm= 2>/dev/null || true)
+fi
+
+if ! threshold_sec=$(parse_dur "$threshold"); then
+  exit 2
+fi
+me_user=$(id -un)
+stale_same=""; stale_cross=""; count=0
+
+printf "%-7s %-10s %10s %9s  %-7s %-4s  %s\n" "PID" "USER" "AGE" "RSS" "STATE" "PROT" "TITLE"
+printf "%-7s %-10s %10s %9s  %-7s %-4s  %s\n" "---" "----" "---" "---" "-----" "----" "-----"
+
+while IFS= read -r row; do
+  [ -z "$row" ] && continue
+  pid=$(awk '{print $1}' <<<"$row")
+  usr=$(awk '{print $2}' <<<"$row")
+  etm=$(awk '{print $3}' <<<"$row")
+  tty=$(awk '{print $4}' <<<"$row")
+  rss=$(awk '{print $5}' <<<"$row")
+  cmd=$(awk '{print $NF}' <<<"$row")
+  [ "$cmd" = "claude" ] || continue
+  # defensive numeric validation — ps should always produce these, but belt-and-suspenders
+  case "$pid$rss" in *[!0-9]*|'') continue ;; esac
+  is_ancestor "$ancs" "$pid" && continue
+  age=$(etime_to_sec "$etm")
+  rss_mb=$((rss / 1024))
+  title=""
+  if [ -n "$titles_raw" ] && [ "$tty" != "??" ]; then
+    title=$(resolve_tty_title "$tty" "$titles_raw")
+  fi
+  title=$(sanitize "$title")
+  title=$(trunc "$title" 60)
+  if is_protected "$pid"; then prot="yes"; else prot=""; fi
+  if [ "$age" -ge "$threshold_sec" ]; then
+    state="STALE"
+    if [ -z "$prot" ]; then
+      if [ "$usr" = "$me_user" ]; then stale_same="$stale_same $pid"
+      else stale_cross="$stale_cross $pid"; fi
+    fi
+  else
+    state="active"
+  fi
+  printf "%-7s %-10s %10s %6d MB  %-7s %-4s  %s\n" "$pid" "$usr" "$etm" "$rss_mb" "$state" "$prot" "$title"
+  count=$((count + 1))
+done <<<"$ps_rows"
+
+if [ "$count" -eq 0 ]; then
+  echo "No claude processes found for profile '$profile'."
+  exit 0
+fi
+
+if [ -z "$stale_same$stale_cross" ]; then
+  echo
+  echo "No stale processes to kill (threshold: $threshold)."
+  exit 0
+fi
+
+if [ "$mode" != "kill" ]; then
+  echo
+  echo "Run with --kill to terminate STALE processes."
+  exit 0
+fi
+
+# Re-verify each PID is still a claude process right before killing.
+# Narrows the PID-reuse race window between the earlier ps scan and the kill.
+verify_still_claude() {
+  local verified="" comm
+  for p in "$@"; do
+    comm=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ' ')
+    if [ "$comm" = "claude" ]; then
+      verified="$verified $p"
+    else
+      echo "claude-clean: PID $p is no longer a claude process (now: '${comm:-gone}') — skipping" >&2
+    fi
+  done
+  echo "$verified"
+}
+
+if [ -n "$stale_same" ]; then
+  echo
+  stale_same=$(verify_still_claude $stale_same)
+  if [ -n "$stale_same" ]; then
+    echo "Killing same-user:$stale_same"
+    # `--` prevents any numeric-looking argument from being parsed as a flag
+    # (e.g. a negative PID meaning "process group", or kill -SIGNAL syntax)
+    kill -- $stale_same 2>&1 || true
+  fi
+fi
+if [ -n "$stale_cross" ]; then
+  stale_cross=$(verify_still_claude $stale_cross)
+  if [ -n "$stale_cross" ]; then
+    echo "Killing cross-user (sudo may prompt):$stale_cross"
+    sudo kill -- $stale_cross 2>&1 || true
+  fi
+fi
