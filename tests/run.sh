@@ -220,6 +220,48 @@ t_no_injection_via_unknown_flag() {
     || { echo "INJECTION: $sentinel was created via unknown-flag echo"; return 1; }
 }
 
+t_round_trip_protect_list_unprotect() {
+  # End-to-end test of the primary flow against a mock `claude` binary:
+  # symlink /bin/sleep under the name 'claude' and invoke via PATH so that
+  # `ps -o comm=` reports 'claude' (proving the filter matches it).
+  local fakedir fakepid out comm errs=""
+  fakedir=$(mktemp -d)
+  ln -s /bin/sleep "$fakedir/claude"
+  PATH="$fakedir:$PATH" claude 60 &
+  fakepid=$!
+  sleep 0.2
+
+  comm=$(ps -o comm= -p "$fakepid" 2>/dev/null | tr -d ' ')
+  [ "$comm" = "claude" ] || errs="$errs  setup failed: comm='$comm' (expected 'claude')\n"
+
+  # Protect
+  out=$("$SCRIPT" --protect="$fakepid" 2>&1) || errs="$errs  protect exited nonzero: $out\n"
+  contains "Protected PID $fakepid" "$out" || errs="$errs  protect msg wrong: $out\n"
+
+  # List includes it
+  out=$("$SCRIPT" --list-protected 2>&1) || errs="$errs  list exited nonzero: $out\n"
+  contains "$fakepid" "$out" || errs="$errs  protected PID missing from list: $out\n"
+
+  # Re-protecting is idempotent
+  out=$("$SCRIPT" --protect="$fakepid" 2>&1) || errs="$errs  re-protect exited nonzero: $out\n"
+  contains "already protected" "$out" || errs="$errs  re-protect msg wrong: $out\n"
+
+  # Unprotect
+  out=$("$SCRIPT" --unprotect="$fakepid" 2>&1) || errs="$errs  unprotect exited nonzero: $out\n"
+  contains "Unprotected PID $fakepid" "$out" || errs="$errs  unprotect msg wrong: $out\n"
+
+  # Second unprotect honestly reports no-op
+  out=$("$SCRIPT" --unprotect="$fakepid" 2>&1)
+  contains "was not protected" "$out" || errs="$errs  noop-unprotect msg wrong: $out\n"
+
+  # Cleanup
+  kill "$fakepid" 2>/dev/null || true
+  wait "$fakepid" 2>/dev/null || true
+  rm -rf "$fakedir"
+
+  if [ -n "$errs" ]; then printf "%b" "$errs"; return 1; fi
+}
+
 t_sanitize_strips_control_bytes() {
   # Exercise the sanitize logic via tr directly with the same arguments the
   # script uses. This guards against someone loosening the filter.
@@ -260,6 +302,7 @@ run_test "symlinked protect file refused, target untouched"   t_symlink_protect_
 run_test "protect dir=700 / file=600 perms enforced"          t_protect_file_perms_are_strict
 run_test "prune drops stale + garbage entries from file"      t_prune_drops_stale_and_garbage_entries
 run_test "default list shows expected column headers"         t_list_default_shows_column_headers
+run_test "round-trip: protect → list → reprotect → unprotect" t_round_trip_protect_list_unprotect
 run_test "sanitize strips ESC/BEL control bytes"              t_sanitize_strips_control_bytes
 run_test "no injection: \$() in --older-than"                 t_no_injection_via_duration
 run_test "no injection: backticks in --older-than"            t_no_injection_via_duration_backticks

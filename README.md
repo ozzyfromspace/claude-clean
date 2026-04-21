@@ -6,19 +6,44 @@ Long-running Claude sessions sit in detached terminal tabs and quietly accumulat
 
 ## Install
 
+### User-local (recommended — no sudo)
+
 ```bash
+mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/ozzyfromspace/claude-clean/main/claude-clean \
-  | sudo tee /usr/local/bin/claude-clean >/dev/null \
-  && sudo chmod 0755 /usr/local/bin/claude-clean
+  -o ~/.local/bin/claude-clean
+chmod +x ~/.local/bin/claude-clean
 ```
 
-Or clone and install:
+If `~/.local/bin` isn't on your `PATH` yet:
 
 ```bash
-git clone https://github.com/ozzyfromspace/claude-clean.git
-cd claude-clean
-sudo install -m 0755 claude-clean /usr/local/bin/claude-clean
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+# open a new terminal, or run: hash -r
 ```
+
+### System-wide (needs sudo — useful if multiple macOS accounts share the machine)
+
+```bash
+sudo curl -fsSL https://raw.githubusercontent.com/ozzyfromspace/claude-clean/main/claude-clean \
+  -o /usr/local/bin/claude-clean
+sudo chmod 0755 /usr/local/bin/claude-clean
+```
+
+### Uninstall
+
+```bash
+rm ~/.local/bin/claude-clean          # user-local
+sudo rm /usr/local/bin/claude-clean    # system-wide
+rm -rf ~/.claude-clean                 # also remove the protect list
+```
+
+## Privileges
+
+`claude-clean` needs **no elevated privileges** for the common case (listing, protecting, killing your own stale claude processes). The only exception:
+
+- **Cross-user kills** (`--profile=otheruser --kill` or `--profile=all --kill`) invoke `sudo kill` internally — killing another user's process is a Unix-level restriction that can't be worked around. Same-user ops never prompt.
+- **iTerm session titles** need one-time Automation permission (macOS asks the first time). If denied, the TITLE column just stays blank.
 
 ## Usage
 
