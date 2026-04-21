@@ -89,12 +89,45 @@ parse_dur() {
 while [ $# -gt 0 ]; do
   case "$1" in
     -k|--kill)            mode="kill" ;;
+
     --profile=*)          profile="${1#--profile=}" ;;
+    --profile)
+      shift
+      [ $# -gt 0 ] || { echo "claude-clean: --profile requires a value (a username, or 'all')" >&2; exit 2; }
+      profile="$1"
+      ;;
+
     --older-than=*)       threshold="${1#--older-than=}" ;;
-    --protect)            mode="protect";   target="." ;;
+    --older-than)
+      shift
+      [ $# -gt 0 ] || { echo "claude-clean: --older-than requires a value (e.g., 30m, 2h, 1d)" >&2; exit 2; }
+      threshold="$1"
+      ;;
+
     --protect=*)          mode="protect";   target="${1#--protect=}" ;;
-    --unprotect)          mode="unprotect"; target="." ;;
+    --protect)
+      mode="protect"
+      # Optional value: if the next arg is a numeric PID, consume it; otherwise
+      # default to '.' (the current claude session, resolved later).
+      if [ $# -gt 1 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+        shift
+        target="$1"
+      else
+        target="."
+      fi
+      ;;
+
     --unprotect=*)        mode="unprotect"; target="${1#--unprotect=}" ;;
+    --unprotect)
+      mode="unprotect"
+      if [ $# -gt 1 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+        shift
+        target="$1"
+      else
+        target="."
+      fi
+      ;;
+
     --list-protected)     mode="list-protected" ;;
     --where)              mode="where" ;;
     -h|--help)            usage; exit 0 ;;

@@ -220,6 +220,27 @@ t_no_injection_via_unknown_flag() {
     || { echo "INJECTION: $sentinel was created via unknown-flag echo"; return 1; }
 }
 
+t_space_form_older_than() {
+  # --older-than 5s (space-separated) should work identically to --older-than=5s
+  "$SCRIPT" --older-than 5s --profile "$(id -un)" >/dev/null 2>&1 \
+    || { echo "space-form --older-than failed"; return 1; }
+}
+
+t_space_form_profile() {
+  "$SCRIPT" --profile "$(id -un)" --older-than 5s >/dev/null 2>&1 \
+    || { echo "space-form --profile failed"; return 1; }
+}
+
+t_older_than_missing_value_rejected() {
+  local out; out=$("$SCRIPT" --older-than 2>&1) && { echo "should have errored"; return 1; }
+  contains "requires a value" "$out" || { echo "error unclear: $out"; return 1; }
+}
+
+t_profile_missing_value_rejected() {
+  local out; out=$("$SCRIPT" --profile 2>&1) && { echo "should have errored"; return 1; }
+  contains "requires a value" "$out" || { echo "error unclear: $out"; return 1; }
+}
+
 t_where_prints_expected_keys() {
   local out; out=$("$SCRIPT" --where 2>&1) || { echo "where exited nonzero: $out"; return 1; }
   contains "binary:" "$out"       || { echo "missing binary: key"; return 1; }
@@ -311,6 +332,10 @@ run_test "symlinked protect file refused, target untouched"   t_symlink_protect_
 run_test "protect dir=700 / file=600 perms enforced"          t_protect_file_perms_are_strict
 run_test "prune drops stale + garbage entries from file"      t_prune_drops_stale_and_garbage_entries
 run_test "default list shows expected column headers"         t_list_default_shows_column_headers
+run_test "space form: --older-than 5s"                        t_space_form_older_than
+run_test "space form: --profile USER"                         t_space_form_profile
+run_test "--older-than with no value rejected"                t_older_than_missing_value_rejected
+run_test "--profile with no value rejected"                   t_profile_missing_value_rejected
 run_test "--where prints binary, protect-list, protect-dir"   t_where_prints_expected_keys
 run_test "round-trip: protect → list → reprotect → unprotect" t_round_trip_protect_list_unprotect
 run_test "sanitize strips ESC/BEL control bytes"              t_sanitize_strips_control_bytes
