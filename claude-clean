@@ -502,7 +502,7 @@ if [ -n "$stale_same" ]; then
   echo
   stale_same=$(verify_still_claude $stale_same)
   if [ -n "$stale_same" ]; then
-    echo "Killing same-user:$stale_same"
+    echo "Ending your stale session(s):$stale_same"
     # `--` prevents any numeric-looking argument from being parsed as a flag
     # (e.g. a negative PID meaning "process group", or kill -SIGNAL syntax)
     kill -- $stale_same 2>&1 || true
@@ -511,7 +511,7 @@ fi
 if [ -n "$stale_cross" ]; then
   stale_cross=$(verify_still_claude $stale_cross)
   if [ -n "$stale_cross" ]; then
-    echo "Killing cross-user (sudo may prompt):$stale_cross"
+    echo "Ending stale session(s) on other users (sudo may prompt):$stale_cross"
     sudo kill -- $stale_cross 2>&1 || true
   fi
 fi
